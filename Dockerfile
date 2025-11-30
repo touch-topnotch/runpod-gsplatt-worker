@@ -56,7 +56,7 @@ RUN pip3 install submodules/diff-gaussian-rasterization
 RUN pip3 install submodules/simple-knn
 
 # Install RunPod SDK
-RUN pip3 install --no-cache-dir runpod requests boto3
+RUN pip3 install --no-cache-dir runpod requests
 
 # Copy handler and helper scripts
 COPY rp_handler.py ./rp_handler.py

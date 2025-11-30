@@ -8,10 +8,9 @@ It handles the full pipeline:
 2. Extract frames using ffmpeg
 3. Run COLMAP for camera poses
 4. Train 3DGS model
-5. Upload results to S3/MinIO
+5. Upload results to master server
 """
 import os
-import json
 import subprocess
 import uuid
 import shutil
@@ -27,12 +26,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # === Settings from environment ===
-OUTPUT_BUCKET_URL = os.getenv("OUTPUT_BUCKET_URL", "")
-OUTPUT_BUCKET_KEY = os.getenv("OUTPUT_BUCKET_KEY", "")
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "gsplatt-results")
+# URL вашего master-server для загрузки результатов
+MASTER_SERVER_URL = os.getenv("MASTER_SERVER_URL", "")
+# API ключ для авторизации загрузки (опционально)
+UPLOAD_API_KEY = os.getenv("UPLOAD_API_KEY", "")
 
 WORKDIR = Path("/workspace")
 
@@ -70,92 +67,56 @@ def download_video(url: str, dst: Path) -> None:
         logger.info(f"Downloaded {downloaded} bytes to {dst}")
 
 
-def upload_results_s3(result_dir: Path, scene_id: str) -> str:
+def upload_results(result_dir: Path, scene_id: str) -> str:
     """
-    Upload results to S3/MinIO.
+    Upload results to master server.
     Returns public URL to the uploaded file.
     """
-    try:
-        import boto3
-        from botocore.config import Config
-        
-        # Create zip archive
-        zip_name = f"{scene_id}.zip"
-        zip_path = result_dir.parent / zip_name
-        
-        logger.info(f"Creating archive: {zip_path}")
-        shutil.make_archive(str(zip_path.with_suffix('')), 'zip', result_dir)
-        
-        # Upload to S3
-        s3_config = Config(
-            signature_version='s3v4',
-            s3={'addressing_style': 'path'}
-        )
-        
-        s3_client = boto3.client(
-            's3',
-            endpoint_url=S3_ENDPOINT_URL if S3_ENDPOINT_URL else None,
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            config=s3_config
-        )
-        
-        s3_key = f"results/{zip_name}"
-        logger.info(f"Uploading to S3: {S3_BUCKET_NAME}/{s3_key}")
-        
-        s3_client.upload_file(
-            str(zip_path),
-            S3_BUCKET_NAME,
-            s3_key,
-            ExtraArgs={'ACL': 'public-read'}
-        )
-        
-        # Generate public URL
-        if S3_ENDPOINT_URL:
-            public_url = f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/{s3_key}"
-        else:
-            public_url = f"https://{S3_BUCKET_NAME}.s3.amazonaws.com/{s3_key}"
-        
-        logger.info(f"Uploaded to: {public_url}")
-        return public_url
-        
-    except ImportError:
-        logger.warning("boto3 not available, falling back to simple upload")
-        return upload_results_simple(result_dir, scene_id)
-    except Exception as e:
-        logger.error(f"S3 upload failed: {e}")
-        raise
-
-
-def upload_results_simple(result_dir: Path, scene_id: str) -> str:
-    """
-    Simple HTTP upload fallback.
-    """
-    if not OUTPUT_BUCKET_URL:
-        raise ValueError("OUTPUT_BUCKET_URL not configured")
+    if not MASTER_SERVER_URL:
+        raise ValueError("MASTER_SERVER_URL not configured")
     
+    # Create zip archive
     zip_name = f"{scene_id}.zip"
     zip_path = result_dir.parent / zip_name
     
     logger.info(f"Creating archive: {zip_path}")
     shutil.make_archive(str(zip_path.with_suffix('')), 'zip', result_dir)
     
-    logger.info(f"Uploading to {OUTPUT_BUCKET_URL}/{zip_name}")
+    # Upload to master server
+    upload_url = f"{MASTER_SERVER_URL.rstrip('/')}/api/upload/gsplatt"
+    logger.info(f"Uploading to {upload_url}")
+    
+    headers = {}
+    if UPLOAD_API_KEY:
+        headers["Authorization"] = f"Bearer {UPLOAD_API_KEY}"
     
     with open(zip_path, "rb") as f:
-        headers = {}
-        if OUTPUT_BUCKET_KEY:
-            headers["Authorization"] = f"Bearer {OUTPUT_BUCKET_KEY}"
+        files = {"file": (zip_name, f, "application/zip")}
+        data = {"scene_id": scene_id}
         
-        resp = requests.put(
-            f"{OUTPUT_BUCKET_URL}/{zip_name}",
-            data=f,
+        resp = requests.post(
+            upload_url,
+            files=files,
+            data=data,
             headers=headers,
             timeout=600
         )
         resp.raise_for_status()
     
-    return f"{OUTPUT_BUCKET_URL}/{zip_name}"
+    # Parse response to get public URL
+    try:
+        result = resp.json()
+        public_url = result.get("url") or result.get("download_url")
+        if public_url:
+            logger.info(f"Uploaded successfully: {public_url}")
+            return public_url
+    except Exception:
+        pass
+    
+    # Fallback: construct URL
+    public_url = f"{MASTER_SERVER_URL.rstrip('/')}/files/gsplatt/{zip_name}"
+    logger.info(f"Uploaded to: {public_url}")
+    return public_url
 
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -223,7 +184,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         # === Stage 3: Upload results (90-100%) ===
         runpod.serverless.progress_update(job, {"progress": 90, "stage": "uploading"})
         
-        plt_url = upload_results_s3(output_dir, scene_id)
+        plt_url = upload_results(output_dir, scene_id)
         
         runpod.serverless.progress_update(job, {"progress": 100, "stage": "done"})
         
@@ -252,4 +213,3 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
 if __name__ == "__main__":
     logger.info("Starting RunPod Gaussian Splatting worker...")
     runpod.serverless.start({"handler": handler})
-

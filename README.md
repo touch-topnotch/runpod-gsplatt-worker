@@ -10,16 +10,16 @@ Docker образ для обучения 3D Gaussian Splatting моделей �
 2. **Извлекает кадры** с помощью ffmpeg
 3. **Запускает COLMAP** для определения поз камер
 4. **Обучает 3DGS модель** с помощью gaussian-splatting
-5. **Загружает результат** в S3/MinIO
+5. **Загружает результат** на master-server
 
 ## Сборка образа
 
 ```powershell
 # Сборка образа
-docker build -t your-registry/runpod-gs-worker:latest .
+docker build -t your-registry/runpod-gsplatt-worker:latest .
 
 # Пуш в registry
-docker push your-registry/runpod-gs-worker:latest
+docker push your-registry/runpod-gsplatt-worker:latest
 ```
 
 ## Переменные окружения
@@ -28,18 +28,14 @@ docker push your-registry/runpod-gs-worker:latest
 
 | Переменная | Описание | Обязательно |
 |------------|----------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS/MinIO access key | Да |
-| `AWS_SECRET_ACCESS_KEY` | AWS/MinIO secret key | Да |
-| `S3_BUCKET_NAME` | Имя бакета для результатов | Да |
-| `S3_ENDPOINT_URL` | URL S3 (для MinIO) | Нет |
-| `OUTPUT_BUCKET_URL` | Альтернативный URL для загрузки | Нет |
-| `OUTPUT_BUCKET_KEY` | Ключ авторизации для альтернативного URL | Нет |
+| `MASTER_SERVER_URL` | URL вашего master-server (например `https://api.example.com`) | Да |
+| `UPLOAD_API_KEY` | API ключ для авторизации загрузки | Нет |
 
 ## Деплой на RunPod
 
 1. Зайдите в [RunPod Console](https://www.runpod.io/console/serverless)
 2. Создайте новый Serverless Endpoint:
-   - **Docker Image**: `your-registry/runpod-gs-worker:latest`
+   - **Docker Image**: `your-registry/runpod-gsplatt-worker:latest`
    - **GPU Type**: L4 / A5000 / RTX 3090 (рекомендуется)
    - **Execution Timeout**: 1800000 ms (30 минут)
    - **Env Variables**: настройте переменные выше
@@ -87,7 +83,7 @@ GET /status/{job_id}
         "status": "success",
         "scene_id": "my-scene-123",
         "progress": 100,
-        "plt_url": "https://s3.example.com/results/my-scene-123.zip"
+        "plt_url": "https://your-server.com/files/gsplatt/my-scene-123.zip"
     }
 }
 ```
@@ -97,16 +93,14 @@ GET /status/{job_id}
 ```powershell
 # Запуск контейнера локально
 docker run --gpus all -it \
-    -e AWS_ACCESS_KEY_ID=your-key \
-    -e AWS_SECRET_ACCESS_KEY=your-secret \
-    -e S3_BUCKET_NAME=test-bucket \
-    your-registry/runpod-gs-worker:latest
+    -e MASTER_SERVER_URL=https://your-server.com \
+    your-registry/runpod-gsplatt-worker:latest
 
 # Тест prepare_from_video.py
 docker run --gpus all -it \
     -v /path/to/video.mp4:/workspace/test.mp4 \
     -v /path/to/output:/workspace/output \
-    your-registry/runpod-gs-worker:latest \
+    your-registry/runpod-gsplatt-worker:latest \
     python3 prepare_from_video.py --video /workspace/test.mp4 --out /workspace/output --fps 2
 ```
 
@@ -137,4 +131,3 @@ docker run --gpus all -it \
 - Уменьшите разрешение видео
 - Уменьшите количество итераций
 - Используйте GPU с большей памятью
-
